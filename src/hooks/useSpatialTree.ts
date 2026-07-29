@@ -9,12 +9,12 @@ export interface SpatialTreeItem {
   name?: string
 }
 
-export function useSpatialTree(engineRef: React.MutableRefObject<FragmentsEngine | null>, modelId: string | null) {
+export function useSpatialTree(engineRef: React.MutableRefObject<FragmentsEngine | null>, modelId: string | null, isLoadedInEngine: boolean = false) {
   const [treeData, setTreeData] = useState<SpatialTreeItem | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
   useEffect(() => {
-    if (!engineRef.current || !modelId) {
+    if (!engineRef.current || !modelId || !isLoadedInEngine) {
       setTreeData(null)
       return
     }
@@ -90,7 +90,7 @@ export function useSpatialTree(engineRef: React.MutableRefObject<FragmentsEngine
     }
 
     loadTree()
-  }, [engineRef, modelId])
+  }, [engineRef, modelId, isLoadedInEngine])
 
   return { treeData, isLoading }
 }

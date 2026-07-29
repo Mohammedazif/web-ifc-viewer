@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { Box3 } from 'three'
 import type { FragmentsEngine } from '@/lib/fragmentsEngine'
+import { useModelStore } from '@/store/useModelStore'
 
 export function useModelLoader(engineRef: React.MutableRefObject<FragmentsEngine | null>) {
   const [isLoading, setIsLoading] = useState(false)
@@ -22,6 +23,9 @@ export function useModelLoader(engineRef: React.MutableRefObject<FragmentsEngine
       model.useCamera(engine.world.camera.three)
       engine.world.scene.three.add(model.object)
       await engine.fragments.update(true)
+      
+      // Notify the store that the model is fully loaded in the engine
+      useModelStore.getState().markModelLoadedInEngine(modelId)
 
       // Fit camera to model bounds
       try {

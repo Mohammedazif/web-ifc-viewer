@@ -16,7 +16,8 @@ interface ModelTreeContainerProps {
 }
 
 function ModelTreeContainer({ engineRef, modelId }: ModelTreeContainerProps) {
-  const { treeData, isLoading } = useSpatialTree(engineRef, modelId)
+  const isLoadedInEngine = useModelStore(s => s.modelsLoadedInEngine[modelId])
+  const { treeData, isLoading } = useSpatialTree(engineRef, modelId, isLoadedInEngine)
   
   const handleNodeClick = async (localId: number) => {
     const engine = engineRef.current
