@@ -34,18 +34,37 @@ export function useSpatialTree(engineRef: React.MutableRefObject<FragmentsEngine
           let name: string | undefined = undefined
           if (node.localId !== null) {
             try {
-              const item = await model.getItem(node.localId)
-              if (item && typeof item === 'object') {
-                // Typical IFC property objects might have a Name property
-                const nameAttr = (item as any).Name
-                if (nameAttr && typeof nameAttr === 'object' && nameAttr.value) {
-                  name = nameAttr.value
-                } else if (typeof nameAttr === 'string') {
-                  name = nameAttr
+              const m = model as any;
+              
+              if (typeof m.getItem === 'function') {
+                const item = m.getItem(node.localId)
+                if (item && typeof item.getAttributes === 'function') {
+                  const attrs = await item.getAttributes()
+                  if (attrs) {
+                    if (typeof attrs.get === 'function') {
+                      const nameEntry = attrs.get('Name') || attrs.get('LongName')
+                      if (nameEntry && nameEntry.value !== undefined && nameEntry.value !== null) {
+                        name = String(nameEntry.value)
+                      }
+                    } else if (attrs.object) {
+                      const nameVal = attrs.object.Name || attrs.object.LongName
+                      if (nameVal !== undefined && nameVal !== null) name = String(nameVal)
+                    }
+                  }
+                }
+              }
+              
+              if (!name && typeof m.getItems === 'function') {
+                const itemsMap: Map<number, any> = await m.getItems([node.localId])
+                const rawItem = itemsMap?.get(node.localId)
+                if (rawItem?.data) {
+                  const nameAttr = rawItem.data['Name'] || rawItem.data['LongName']
+                  if (nameAttr?.value !== undefined && nameAttr.value !== null && nameAttr.value !== '') {
+                    name = String(nameAttr.value)
+                  }
                 }
               }
             } catch (e) {
-              // Ignore if we can't get item data
             }
           }
           
