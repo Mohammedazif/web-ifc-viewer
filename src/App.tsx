@@ -1,75 +1,42 @@
-import { useRef, useState, useEffect } from 'react'
+import { useEffect } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { DropOverlay } from '@/components/ui/DropOverlay'
+import { ShortcutsDialog } from '@/components/ui/ShortcutsDialog'
+import { Toasts } from '@/components/ui/Toasts'
 import { ViewerCanvas } from '@/components/viewer/ViewerCanvas'
-import { useIfcConverter } from '@/hooks/useIfcConverter'
-import { useAppStore } from '@/store/useAppStore'
-import type { FragmentsEngine } from '@/lib/fragmentsEngine'
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
+import { useImportStore } from '@/store/useImportStore'
 import { useModelStore } from '@/store/useModelStore'
+import { useViewerStore } from '@/store/useViewerStore'
 
 export default function App() {
-  const engineRef = useRef<FragmentsEngine | null>(null)
-  const { convert, status } = useIfcConverter()
-  const setStep = useAppStore(s => s.setStep)
+  const hasModels = useModelStore(s => s.models.length > 0)
+  const hasJobs = useImportStore(s => s.jobs.length > 0)
+  const sidebarOpen = useViewerStore(s => s.sidebarOpen)
+  const theme = useViewerStore(s => s.theme)
 
-  const [fileQueue, setFileQueue] = useState<File[]>([])
-  const isReadingRef = useRef(false)
-
-  const handleFiles = (files: File[]) => {
-    setStep('uploading')
-    setFileQueue(prev => [...prev, ...files])
-  }
+  useKeyboardShortcuts()
 
   useEffect(() => {
-    if (status !== 'converting' && fileQueue.length > 0 && !isReadingRef.current) {
-      const nextFile = fileQueue[0]
-      isReadingRef.current = true
-      
-      const reader = new FileReader()
-      reader.onload = (e) => {
-        const buffer = e.target?.result as ArrayBuffer
-        
-        if (nextFile.name.toLowerCase().endsWith('.frag')) {
-          const model = {
-            modelId: `model-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`,
-            originalFileName: nextFile.name,
-            originalFileSizeBytes: nextFile.size,
-            convertedFileSizeBytes: buffer.byteLength,
-            conversionTimeMs: 0,
-            fragBytes: buffer,
-          }
-          useModelStore.getState().addModel(model)
-          useAppStore.getState().setStep('viewing')
-          
-          isReadingRef.current = false
-          setFileQueue(prev => prev.slice(1))
-        } else {
-          convert(new Uint8Array(buffer), nextFile.name, nextFile.size)
-          isReadingRef.current = false
-          setFileQueue(prev => prev.slice(1))
-        }
-      }
-      reader.onerror = () => {
-        isReadingRef.current = false
-        setFileQueue(prev => prev.slice(1))
-      }
-      reader.readAsArrayBuffer(nextFile)
-    }
-  }, [fileQueue, status, convert])
+    document.documentElement.dataset.theme = theme
+  }, [theme])
 
-  const handleEngineReady = (ref: React.MutableRefObject<FragmentsEngine | null>) => {
-    engineRef.current = ref.current
-  }
+  // The sidebar only has something to show once a file has been added.
+  const hasContent = hasModels || hasJobs
 
   return (
     <div className="app-layout">
       <Header />
       <div className="app-body">
-        <Sidebar onFiles={handleFiles} engineRef={engineRef} />
+        {hasContent && <Sidebar hidden={!sidebarOpen} />}
         <main className="app-main">
-          <ViewerCanvas onEngineReady={handleEngineReady} />
+          <ViewerCanvas />
         </main>
       </div>
+      <DropOverlay />
+      <ShortcutsDialog />
+      <Toasts />
     </div>
   )
 }

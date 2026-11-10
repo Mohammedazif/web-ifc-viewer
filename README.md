@@ -1,4 +1,4 @@
-# IFC Fragment Viewer
+# Converie
 
 A lightweight, fully client-side web application that lets anyone upload an IFC file,
 converts it instantly to the optimized `.frag` binary format, renders it in a

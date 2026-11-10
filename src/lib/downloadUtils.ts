@@ -1,27 +1,58 @@
-import type { FragmentsEngine } from './fragmentsEngine'
+import JSZip from 'jszip'
+import type { LoadedModel } from '@/types'
+import { getEngine } from './fragmentsEngine'
+import { toast } from '@/store/useViewerStore'
 
-export async function getFragmentBuffer(engine: FragmentsEngine, modelId: string): Promise<Uint8Array> {
-  const model = engine.fragments.models.list.get(modelId)
-  if (!model) throw new Error(`Model ${modelId} not found`)
-  return await (model as any).getBuffer(false)
+const fragName = (fileName: string) => `${fileName.replace(/\.(ifc|frag)$/i, '')}.frag`
+
+async function getFragmentBuffer(modelId: string): Promise<ArrayBuffer> {
+  const model = getEngine()?.fragments.models.list.get(modelId)
+  if (!model) throw new Error('The model is not loaded in the viewer yet')
+  return model.getBuffer(false)
 }
 
-export async function downloadFragmentFile(
-  engine: FragmentsEngine,
-  modelId: string,
-  fileName: string
-): Promise<void> {
-  const buffer = await getFragmentBuffer(engine, modelId)
-  const baseName = fileName.replace(/\.ifc$/i, '')
-  const file = new File([buffer as any], `${baseName}.frag`)
-  const url = URL.createObjectURL(file)
-
+function saveBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = file.name
+  a.download = name
   a.click()
+  // Give the browser a moment to start the download before releasing the blob.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
 
-  URL.revokeObjectURL(url)
+export async function downloadModel(model: LoadedModel) {
+  try {
+    const buffer = await getFragmentBuffer(model.modelId)
+    const name = fragName(model.originalFileName)
+    saveBlob(new Blob([buffer]), name)
+    toast(`Saved ${name}`, 'success')
+  } catch (err: any) {
+    console.error('Download failed:', err)
+    toast(`Download failed: ${err?.message ?? 'unknown error'}`, 'error')
+  }
+}
+
+export async function downloadAllAsZip(models: LoadedModel[]) {
+  if (models.length === 0) return
+  try {
+    const zip = new JSZip()
+    const used = new Set<string>()
+    for (const model of models) {
+      let name = fragName(model.originalFileName)
+      // Two uploads can share a file name; keep both in the archive.
+      for (let n = 2; used.has(name); n++) {
+        name = fragName(model.originalFileName).replace(/\.frag$/, ` (${n}).frag`)
+      }
+      used.add(name)
+      zip.file(name, await getFragmentBuffer(model.modelId))
+    }
+    saveBlob(await zip.generateAsync({ type: 'blob' }), 'models.zip')
+    toast(`Saved ${models.length} models as models.zip`, 'success')
+  } catch (err: any) {
+    console.error('Download all failed:', err)
+    toast(`Download failed: ${err?.message ?? 'unknown error'}`, 'error')
+  }
 }
 
 export function formatBytes(bytes: number): string {
