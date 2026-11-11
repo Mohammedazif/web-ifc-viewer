@@ -28,8 +28,27 @@ const HOVER_MATERIAL: FRAGS.MaterialDefinition = {
   transparent: false,
 }
 
+// A room is a volume. Drawn solid it fills the glass, so it stays hidden until it is the one picked.
+const SPACE_MATERIAL: FRAGS.MaterialDefinition = {
+  color: new THREE.Color('#3d6df2'),
+  renderedFaces: FRAGS.RenderedFaces.TWO,
+  opacity: 0.18,
+  transparent: true,
+  depthWrite: false,
+}
+
+const SPACE_HOVER: FRAGS.MaterialDefinition = {
+  color: new THREE.Color('#9db8ff'),
+  renderedFaces: FRAGS.RenderedFaces.TWO,
+  opacity: 0.12,
+  transparent: true,
+  depthWrite: false,
+}
+
 /** Element ids with geometry, per loaded model. */
 const geometryIds = new Map<string, Set<number>>()
+/** Room volumes, per loaded model. Hidden until one of them is selected. */
+const spaceIds = new Map<string, Set<number>>()
 /** Models already handed to the engine, so they are only loaded once. */
 const requested = new Set<string>()
 
@@ -58,10 +77,76 @@ function groupByModel(refs: ItemRef[]) {
 /** Called when the engine is torn down so stale bookkeeping doesn't leak into the next one. */
 export function resetEngineState() {
   geometryIds.clear()
+  spaceIds.clear()
   requested.clear()
   hoverApplied = null
   clearInfo()
   viewer().set({ selection: [], primary: null, hovered: null, hidden: {}, trees: {}, loadingCount: 0 })
+}
+
+function isSpace(ref: ItemRef) {
+  return spaceIds.get(ref.modelId)?.has(ref.localId) ?? false
+}
+
+function materialFor(ref: ItemRef, selected: boolean) {
+  if (!isSpace(ref)) return selected ? SELECT_MATERIAL : HOVER_MATERIAL
+  return selected ? SPACE_MATERIAL : SPACE_HOVER
+}
+
+/** Rooms that are not selected go back into the hidden set, and the selected room comes out. */
+function markSpaceHidden(selected: ItemRef[]) {
+  if (spaceIds.size === 0) return
+  const chosen = new Set(selected.filter(isSpace).map(refKey))
+  const state = viewer()
+  const hidden = { ...state.hidden }
+  for (const [modelId, ids] of spaceIds) {
+    const set = new Set(hidden[modelId])
+    for (const id of ids) {
+      if (chosen.has(refKey({ modelId, localId: id }))) set.delete(id)
+      else set.add(id)
+    }
+    if (set.size > 0) hidden[modelId] = set
+    else delete hidden[modelId]
+  }
+  state.set({ hidden })
+}
+
+async function applySpaceVisibility(selected: ItemRef[]) {
+  const chosen = new Map<string, Set<number>>()
+  for (const ref of selected) {
+    if (!isSpace(ref)) continue
+    const ids = chosen.get(ref.modelId) ?? new Set<number>()
+    ids.add(ref.localId)
+    chosen.set(ref.modelId, ids)
+  }
+  for (const [modelId, ids] of spaceIds) {
+    const model = getModel(modelId)
+    if (!model) continue
+    const show = chosen.get(modelId)
+    const showIds: number[] = []
+    const hideIds: number[] = []
+    for (const id of ids) {
+      if (show?.has(id)) showIds.push(id)
+      else hideIds.push(id)
+    }
+    if (showIds.length) await model.setVisible(showIds, true)
+    if (hideIds.length) await model.setVisible(hideIds, false)
+  }
+}
+
+async function mergedBox(refs: ItemRef[]) {
+  const box = new THREE.Box3()
+  for (const [modelId, ids] of groupByModel(refs)) {
+    const model = getModel(modelId)
+    if (!model) continue
+    try {
+      const merged = await model.getMergedBox(ids)
+      if (!merged.isEmpty()) box.union(merged)
+    } catch (err) {
+      console.warn('Could not measure elements', err)
+    }
+  }
+  return box
 }
 
 /* ─── Models ─────────────────────────────────────────────────────────────── */
@@ -80,6 +165,16 @@ async function loadModelIntoScene(entry: LoadedModel) {
     if (!useModelStore.getState().models.some(m => m.modelId === modelId)) {
       await engine.fragments.disposeModel(modelId)
       return
+    }
+
+    const rooms = Object.values(await model.getItemsOfCategories([/^IFCSPACE$/i])).flat()
+    if (rooms.length) {
+      spaceIds.set(modelId, new Set(rooms))
+      const state = viewer()
+      const hidden = { ...state.hidden }
+      hidden[modelId] = new Set([...(hidden[modelId] ?? []), ...rooms])
+      state.set({ hidden })
+      await model.setVisible(rooms, false)
     }
 
     model.useCamera(engine.world.camera.three)
@@ -136,6 +231,7 @@ function forgetModel(modelId: string) {
   })
   if (hoverApplied?.modelId === modelId) hoverApplied = null
   geometryIds.delete(modelId)
+  spaceIds.delete(modelId)
   requested.delete(modelId)
   dropModelInfo(modelId)
 }
@@ -208,11 +304,16 @@ async function syncHighlight(prev: ItemRef[], next: ItemRef[]) {
     await getModel(modelId)?.resetHighlight(ids)
   }
   for (const [modelId, ids] of groupByModel(added)) {
-    await getModel(modelId)?.highlight(ids, SELECT_MATERIAL)
+    const model = getModel(modelId)
+    if (!model) continue
+    const rooms = ids.filter(id => spaceIds.get(modelId)?.has(id))
+    const rest = ids.filter(id => !spaceIds.get(modelId)?.has(id))
+    if (rest.length) await model.highlight(rest, SELECT_MATERIAL)
+    if (rooms.length) await model.highlight(rooms, SPACE_MATERIAL)
   }
   // An element that was just deselected may still be under the cursor.
   if (hoverApplied && removed.some(r => refKey(r) === refKey(hoverApplied!))) {
-    await getModel(hoverApplied.modelId)?.highlight([hoverApplied.localId], HOVER_MATERIAL)
+    await getModel(hoverApplied.modelId)?.highlight([hoverApplied.localId], materialFor(hoverApplied, false))
   }
   await engine.fragments.update(true)
 }
@@ -240,7 +341,13 @@ export function setSelection(refs: ItemRef[], options: SelectOptions = {}) {
     primary,
     revealNonce: options.reveal ? state.revealNonce + 1 : state.revealNonce,
   })
-  void enqueue(() => syncHighlight(prev, next))
+  const room = primary && isSpace(primary) ? primary : null
+  if (spaceIds.size > 0) markSpaceHidden(next)
+  void enqueue(async () => {
+    if (spaceIds.size > 0) await applySpaceVisibility(room ? [...next, room] : next)
+    await syncHighlight(prev, next)
+    if (room) await fitBox(await mergedBox([room]), true, 1.4)
+  })
 }
 
 export function toggleInSelection(ref: ItemRef) {
@@ -280,7 +387,7 @@ export function setHover(ref: ItemRef | null) {
       await getModel(prev.modelId)?.resetHighlight([prev.localId])
     }
     if (ref && !selected.has(refKey(ref))) {
-      await getModel(ref.modelId)?.highlight([ref.localId], HOVER_MATERIAL)
+      await getModel(ref.modelId)?.highlight([ref.localId], materialFor(ref, false))
     }
     await engine.fragments.update(true)
   })
@@ -347,9 +454,12 @@ export const isolateSelection = () => isolate(viewer().selection)
 export function showAll() {
   const engine = getEngine()
   if (!engine) return
+  const selected = viewer().selection
   viewer().set({ hidden: {} })
+  markSpaceHidden(selected)
   void enqueue(async () => {
     for (const model of engine.fragments.models.list.values()) await model.resetVisible()
+    await applySpaceVisibility(selected)
     await engine.fragments.update(true)
   })
 }
@@ -381,18 +491,25 @@ export const fitAll = (animate = true) => fitBox(sceneBox(), animate)
 
 export async function focusItems(refs: ItemRef[]) {
   if (refs.length === 0) return
-  const box = new THREE.Box3()
-  for (const [modelId, ids] of groupByModel(refs)) {
-    const model = getModel(modelId)
-    if (!model) continue
-    try {
-      const merged = await model.getMergedBox(ids)
-      if (!merged.isEmpty()) box.union(merged)
-    } catch (err) {
-      console.warn('Could not measure elements', err)
+  const rooms = refs.filter(isSpace)
+  if (rooms.length) {
+    const state = viewer()
+    const hidden = { ...state.hidden }
+    for (const ref of rooms) {
+      const set = new Set(hidden[ref.modelId])
+      set.delete(ref.localId)
+      if (set.size > 0) hidden[ref.modelId] = set
+      else delete hidden[ref.modelId]
     }
+    state.set({ hidden })
   }
-  await fitBox(box, true, 1.4)
+  return enqueue(async () => {
+    for (const [modelId, ids] of groupByModel(rooms)) {
+      await getModel(modelId)?.setVisible(ids, true)
+    }
+    await fitBox(await mergedBox(refs), true, 1.4)
+    await getEngine()?.fragments.update(true)
+  })
 }
 
 /** Zooms to the selection, or to the whole scene when nothing is selected. */
